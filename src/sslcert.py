@@ -3,7 +3,7 @@ import socket
 import logging
 from typing import Optional
 from datetime import datetime, timezone
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from threading import Thread
 import time
 from prometheus_client import Gauge
@@ -13,11 +13,12 @@ class DomainConfig(BaseModel):
     domain: str
     port: int = 443
     timeout: int = 10
+    remark: Optional[str] = None
 
 
 class SSLCertConfig(BaseModel):
     interval_seconds: float = 3600.0  # 默认每小时检查一次
-    domains: list[DomainConfig] = []
+    domains: list[DomainConfig] = Field(default_factory=list)
 
 
 cfg: Optional[SSLCertConfig] = None
@@ -29,47 +30,15 @@ cert_valid = Gauge(
     namespace=NAMESPACE,
     name='valid',
     documentation='SSL证书是否有效 (1=有效, 0=无效)',
-    labelnames=['domain', 'port'],
+    labelnames=['domain', 'port', 'issuer', 'subject', 'remark'],
 )
 
-# 证书剩余有效天数
-cert_expiry_days = Gauge(
+# 证书剩余有效秒数
+cert_remaining_seconds = Gauge(
     namespace=NAMESPACE,
-    name='expiry_days',
-    documentation='SSL证书剩余有效天数',
-    labelnames=['domain', 'port'],
-)
-
-# 证书过期时间戳 (Unix timestamp)
-cert_expiry_timestamp = Gauge(
-    namespace=NAMESPACE,
-    name='expiry_timestamp',
-    documentation='SSL证书过期时间戳 (Unix timestamp)',
-    labelnames=['domain', 'port', 'issuer', 'subject'],
-)
-
-# 证书生效时间戳 (Unix timestamp)
-cert_not_before_timestamp = Gauge(
-    namespace=NAMESPACE,
-    name='not_before_timestamp',
-    documentation='SSL证书生效时间戳 (Unix timestamp)',
-    labelnames=['domain', 'port'],
-)
-
-# 证书版本
-cert_version = Gauge(
-    namespace=NAMESPACE,
-    name='version',
-    documentation='SSL证书版本',
-    labelnames=['domain', 'port'],
-)
-
-# 最后一次检查时间戳
-cert_last_check_timestamp = Gauge(
-    namespace=NAMESPACE,
-    name='last_check_timestamp',
-    documentation='最后一次检查SSL证书的时间戳',
-    labelnames=['domain', 'port'],
+    name='remaining_seconds',
+    documentation='SSL证书剩余有效秒数',
+    labelnames=['domain', 'port', 'issuer', 'subject', 'remark'],
 )
 
 # 连接错误指标 (1=有错误, 0=正常)
@@ -77,7 +46,7 @@ cert_connection_error = Gauge(
     namespace=NAMESPACE,
     name='connection_error',
     documentation='连接或获取证书时是否出错 (1=有错误, 0=正常)',
-    labelnames=['domain', 'port', 'error_type'],
+    labelnames=['domain', 'port', 'error_type', 'remark'],
 )
 
 
@@ -135,27 +104,28 @@ def collect_cert_metrics(domain_cfg: DomainConfig):
     domain = domain_cfg.domain
     port = domain_cfg.port
     timeout = domain_cfg.timeout
+    remark = domain_cfg.remark or ''
 
     logging.info(f"开始检查 {domain}:{port} 的SSL证书")
 
-    # 记录检查时间
     now = datetime.now(timezone.utc)
-    cert_last_check_timestamp.labels(
-        domain=domain, port=port).set(now.timestamp())
 
     cert_info = get_ssl_cert_info(domain, port, timeout)
 
     if cert_info is None:
         # 连接失败，设置错误指标
         cert_connection_error.labels(
-            domain=domain, port=port, error_type='connection_failed').set(1)
-        cert_valid.labels(domain=domain, port=port).set(0)
+            domain=domain, port=port, error_type='connection_failed', remark=remark).set(1)
+        unknown_labels = dict(domain=domain, port=port,
+                              issuer='unknown', subject='unknown', remark=remark)
+        cert_valid.labels(**unknown_labels).set(0)
+        cert_remaining_seconds.labels(**unknown_labels).set(0)
         logging.warning(f"无法获取 {domain}:{port} 的证书信息")
         return
 
     # 连接成功，清除错误指标
     cert_connection_error.labels(
-        domain=domain, port=port, error_type='connection_failed').set(0)
+        domain=domain, port=port, error_type='connection_failed', remark=remark).set(0)
 
     try:
         # 解析证书时间
@@ -169,38 +139,40 @@ def collect_cert_metrics(domain_cfg: DomainConfig):
         subject_cn = subject.get('commonName', 'unknown')
         issuer_cn = issuer.get('commonName', 'unknown')
 
-        # 计算剩余天数
-        remaining_days = (not_after - now).days
+        # 计算剩余秒数并确保非负
+        remaining_seconds = max((not_after - now).total_seconds(), 0.0)
 
         # 判断证书是否有效
         is_valid = not_before <= now <= not_after
 
         # 更新指标
-        cert_valid.labels(domain=domain, port=port).set(1 if is_valid else 0)
-        cert_expiry_days.labels(domain=domain, port=port).set(remaining_days)
-        cert_expiry_timestamp.labels(
+        labels = dict(
             domain=domain,
             port=port,
             issuer=issuer_cn,
-            subject=subject_cn
-        ).set(not_after.timestamp())
-        cert_not_before_timestamp.labels(
-            domain=domain, port=port).set(not_before.timestamp())
-        cert_version.labels(domain=domain, port=port).set(
-            cert_info.get('version', 0))
+            subject=subject_cn,
+            remark=remark,
+        )
+        cert_valid.labels(**labels).set(1 if is_valid else 0)
+        cert_remaining_seconds.labels(**labels).set(remaining_seconds)
+        cert_connection_error.labels(
+            domain=domain, port=port, error_type='parse_error', remark=remark).set(0)
 
         logging.info(
             f"{domain}:{port} 证书信息: "
             f"主题={subject_cn}, 颁发者={issuer_cn}, "
-            f"剩余天数={remaining_days}, 有效={is_valid}, "
+            f"剩余秒数={remaining_seconds:.0f}, 有效={is_valid}, "
             f"生效时间={not_before.isoformat()}, 过期时间={not_after.isoformat()}"
         )
 
     except Exception as e:
         logging.error(f"解析 {domain}:{port} 证书信息时出错: {e}")
         cert_connection_error.labels(
-            domain=domain, port=port, error_type='parse_error').set(1)
-        cert_valid.labels(domain=domain, port=port).set(0)
+            domain=domain, port=port, error_type='parse_error', remark=remark).set(1)
+        unknown_labels = dict(domain=domain, port=port,
+                              issuer='unknown', subject='unknown', remark=remark)
+        cert_valid.labels(**unknown_labels).set(0)
+        cert_remaining_seconds.labels(**unknown_labels).set(0)
 
 
 def collect_all_metrics():
@@ -223,6 +195,10 @@ def collect_loop():
     """
     定期采集指标的循环
     """
+    if not cfg:
+        logging.error("SSL证书监控未初始化配置，采集线程退出")
+        return
+
     logging.info(f"SSL证书监控线程启动，采集间隔: {cfg.interval_seconds}秒")
 
     while True:

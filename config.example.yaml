@@ -32,6 +32,8 @@ sslcert_config:
     - domain: "www.example.com"
       port: 443
       timeout: 10
+      remark: "公网主站"
     - domain: "api.example.com"
       port: 443
       timeout: 10
+      remark: "API 服务"
