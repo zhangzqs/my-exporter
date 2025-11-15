@@ -8,6 +8,7 @@ import logging
 import mihome
 import qweather
 import mirouter
+import sslcert
 
 
 class Config(BaseModel):
@@ -16,6 +17,7 @@ class Config(BaseModel):
     mihome_config: Optional[mihome.MiHomeConfig] = None
     qweather_config: Optional[qweather.QWeatherConfig] = None
     mirouter_config: Optional[mirouter.MiRouterConfig] = None
+    sslcert_config: Optional[sslcert.SSLCertConfig] = None
 
 
 def main():
@@ -25,40 +27,62 @@ def main():
     logging.info(f"Starting MiHome Exporter on port {cfg.port}")
 
     threads: list[Thread] = []
+
+    # MiHome collector
     if cfg.mihome_config:
-        mihome.init(cfg.mihome_config)
-        threads.append(mihome.start_collect())
+        threads.append(mihome.start_collect(cfg.mihome_config))
+        logging.info("MiHome collector thread started.")
     else:
         logging.warning(
-            "MiHome configuration is not provided, skipping MiHome collector initialization.")
+            "MiHome configuration is not provided, skipping MiHome collector initialization."
+        )
 
+    # QWeather collector
     if cfg.qweather_config:
-        qweather.init(cfg.qweather_config)
-        threads.append(qweather.start_collect())
+        threads.append(qweather.start_collect(cfg.qweather_config))
+        logging.info("QWeather collector thread started.")
     else:
         logging.warning(
-            "QWeather configuration is not provided, skipping QWeather collector initialization.")
+            "QWeather configuration is not provided, skipping QWeather collector initialization."
+        )
 
+    # MiRouter collector
     if cfg.mirouter_config:
-        mirouter.init(cfg.mirouter_config)
-        threads.append(mirouter.start_collect())
+        threads.append(mirouter.start_collect(cfg.mirouter_config))
+        logging.info("MiRouter collector thread started.")
     else:
         logging.warning(
-            "MiRouter configuration is not provided, skipping MiRouter collector initialization.")
+            "MiRouter configuration is not provided, skipping MiRouter collector initialization."
+        )
+
+    # SSLCert collector
+    if cfg.sslcert_config:
+        threads.append(sslcert.start_collect(cfg.sslcert_config))
+        logging.info("SSLCert collector thread started.")
+    else:
+        logging.warning(
+            "SSLCert configuration is not provided, skipping SSLCert collector initialization."
+        )
 
     if not threads:
-        logging.warning(
-            "No collectors initialized, exiting. Please provide valid configurations.")
+        logging.error(
+            "No collectors started, exiting. Please provide valid configurations."
+        )
         return
+
+    logging.info(
+        f"Successfully started {len(threads)} collector(s). Monitoring...")
+
     while True:
         for thread in threads:
             if not thread.is_alive():
                 logging.error(
-                    f"Thread {thread.name} has stopped unexpectedly. Exiting.")
+                    f"Thread {thread.name} has stopped unexpectedly. Exiting."
+                )
                 return
         for thread in threads:
             thread.join(timeout=1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

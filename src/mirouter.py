@@ -2,7 +2,7 @@ import logging
 from threading import Thread
 from typing import List, Optional, Type, TypeVar, Union
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 import time
 import random
 import hashlib
@@ -439,9 +439,17 @@ class Device(BaseModel):
     name: str
     times: int
     ip: List[IPDetail]
-    statistics: Statistics
+    statistics: Optional[Statistics] = None
     icon: str
     type: int
+
+    @field_validator('statistics', mode='before')
+    @classmethod
+    def validate_statistics(cls, v):
+        # 处理空列表的情况
+        if isinstance(v, list) and len(v) == 0:
+            return None
+        return v
 
 
 class DeviceListResponse(BaseModel):
@@ -550,14 +558,27 @@ def collect_once():
             logging.warn("正在重试获取路由器状态...")
 
 
-def start_collect() -> Thread:
-    if cfg is None:
-        raise ValueError('请先调用 init() 初始化配置')
+def start_collect(config: Optional[MiRouterConfig] = None) -> Thread:
+    """
+    启动采集线程
 
+    Args:
+        config: MiRouter配置，如果提供则在线程内初始化
+    """
     def run():
-        while True:
-            collect_once()
-            time.sleep(cfg.interval_seconds)
+        try:
+            if config:
+                init(config)
+
+            if cfg is None:
+                logging.error('MiRouter配置未初始化')
+                return
+
+            while True:
+                collect_once()
+                time.sleep(cfg.interval_seconds)
+        except Exception as e:
+            logging.error(f"MiRouter采集线程异常: {e}", exc_info=True)
 
     t = Thread(target=run, name='MiRouterCollectorThread', daemon=True)
     t.start()

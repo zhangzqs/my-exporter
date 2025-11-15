@@ -487,22 +487,38 @@ def collect_once():
         logging.exception(e)
 
 
-def start_collect() -> Thread:
-    if cfg is None:
-        raise ValueError('请先调用 init() 初始化配置')
-    for (did, alias_name) in cfg.device_name_alias.items():
-        for device in devices:
-            if device['did'] == did:
-                device['name'] = alias_name
-                break
-        else:
-            logging.warning(f'未找到设备 {did}，无法设置设备别名 {alias_name}')
-            continue
-
+def start_collect(config: Optional[MiHomeConfig] = None) -> Thread:
+    """
+    启动采集线程
+    
+    Args:
+        config: MiHome配置，如果提供则在线程内初始化
+    """
     def run():
-        while True:
-            collect_once()
-            time.sleep(cfg.interval_seconds)
+        global cfg, devices
+        try:
+            if config:
+                init(config)
+            
+            if cfg is None:
+                logging.error('MiHome配置未初始化')
+                return
+            
+            # 设置设备别名
+            for (did, alias_name) in cfg.device_name_alias.items():
+                for device in devices:
+                    if device['did'] == did:
+                        device['name'] = alias_name
+                        break
+                else:
+                    logging.warning(f'未找到设备 {did}，无法设置设备别名 {alias_name}')
+                    continue
+            
+            while True:
+                collect_once()
+                time.sleep(cfg.interval_seconds)
+        except Exception as e:
+            logging.error(f"MiHome采集线程异常: {e}", exc_info=True)
 
     t = Thread(target=run, name='MiHomeCollectorThread', daemon=True)
     t.start()

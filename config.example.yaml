@@ -25,3 +25,13 @@ mirouter_config:
   base_addr: "http://miwifi.com"
   password: "<password>"
   interval_seconds: 5
+
+sslcert_config:
+  interval_seconds: 3600 # 每小时检查一次，可根据需要调整
+  domains:
+    - domain: "www.example.com"
+      port: 443
+      timeout: 10
+    - domain: "api.example.com"
+      port: 443
+      timeout: 10

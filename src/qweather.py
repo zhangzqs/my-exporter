@@ -175,14 +175,27 @@ def collect_once():
         logging.exception(e)
 
 
-def start_collect():
-    if cfg is None:
-        raise ValueError('请先调用 init() 初始化配置')
+def start_collect(config: Optional[QWeatherConfig] = None):
+    """
+    启动采集线程
 
+    Args:
+        config: QWeather配置，如果提供则在线程内初始化
+    """
     def run():
-        while True:
-            collect_once()
-            time.sleep(cfg.interval_seconds)
+        try:
+            if config:
+                init(config)
+
+            if cfg is None:
+                logging.error('QWeather配置未初始化')
+                return
+
+            while True:
+                collect_once()
+                time.sleep(cfg.interval_seconds)
+        except Exception as e:
+            logging.error(f"QWeather采集线程异常: {e}", exc_info=True)
 
     t = Thread(target=run, name='QWeatherCollectorThread', daemon=True)
     t.start()
